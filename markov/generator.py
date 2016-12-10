@@ -3,90 +3,92 @@
 """
 Example usage:
 
-parser.py -i war_and_peace.txt -o output.pkl
+generator.py -i output.pkl -o markov_war_and_peace.txt
 
 """
 
 import argparse
-import fileinput
 import logging
 import pickle
 import sys
-import string
+import random
 from utils import TokenMap, Arc
 from collections import deque
 
 logging.getLogger(__name__)
 
-PROGRAM_NAME = 'parser'
+PROGRAM_NAME = 'generator'
 PROGRAM_VERSION = '1.0'
 
-class NGramStore:
+class TokenStore:
     def __init__(self):
-        self._ngrams = dict()
+        self._toks= list()
 
     def __len__(self):
-        return len(self._ngrams)
+        return len(self._toks)
 
-    def write(self, key):
-        if (key in self._ngrams):
-            self._ngrams[key] += 1
-        else:
-            self._ngrams[key] = 1
+    def write(self, tok):
+        self._toks.append(tok)
 
     def read(self):
-        for key, value in self._ngrams.iteritems():
-            yield (key, value)
+        for tok in self._toks:
+            yield tok
 
-class TextParser:
+class TokenGenerator:
     _inputfile = ''
 
-    def __init__(self, inputfile, n, quiet=False):
+    def __init__(self, inputfile, n, length, quiet=False):
         self._inputfile = inputfile
         assert self._inputfile, "Input file must be provided."
         self._ngramsize = n
-        assert self._ngramsize > 0, "N must be positive."
+        assert self._ngramsize > 0, "ngramsize must be positive."
+        self._length = length
+        assert self._length > 0, "Lenth must be positive."
 
         if self._inputfile == '-':
-            logging.info("Parse {}-ngrams from stdin.".format(self._ngramsize))
+            logging.info("Generate {} tokens from stdin.".format(self._length))
         else:
-            logging.info("Parse {}-grams from file '{}'.".format(self._ngramsize, self._inputfile))
+            logging.info("Generate {} tokens from file '{}'.".format(self._length, self._inputfile))
 
         self._quiet = quiet
-        self._store = NGramStore()
+        self._store = TokenStore()
 
-        self._storeNGrams()
+        with open(self._inputfile) as inFile:
+            self._tokenMap = pickle.load(inFile)
 
-    def _ngramGenerator(self):
-        ngram = deque()
-        for line in fileinput.input(self._inputfile):
-            for word in line.split():
-                word = word.strip(string.punctuation).lower()
-                word = "".join(filter(lambda x : x in string.printable, word))
-                inputToks = " ".join(ngram)
-                outputTok = word
-                yield inputToks, outputTok
-                ngram.append(outputTok)
-                if (len(ngram) > self._ngramsize):
-                    ngram.popleft()
+        self._generateTokens()
 
-    def _storeNGrams(self):
-        ngramsparsed = 0
-        for inputToks, outputTok in self._ngramGenerator():
-            self._store.write((inputToks, outputTok))
-            ngramsparsed += 1
-            self._printCount(ngramsparsed)
-        self._endCountPrinting(ngramsparsed)
+    def _tokenGenerator(self):
+        currentToks = deque('')
+        for _ in range(self._length):
+            ilabel = " ".join(currentToks)
+            arcs = self._tokenMap.getArcs(ilabel)
+            if arcs:
+                nextTok = random.choice(arcs).olabel
+                yield nextTok
+                currentToks.append(nextTok)
+                if len(currentToks) > self._ngramsize:
+                    currentToks.popleft()
+            else:
+                logging.warn("No acive tokens for '{}'".format(ilabel))
 
-    def _printCount(self, ngramcount):
+    def _generateTokens(self):
+        generated = 0
+        for tok in self._tokenGenerator():
+            self._store.write(tok)
+            generated += 1
+            self._printCount(generated)
+        self._endCountPrinting(generated)
+
+    def _printCount(self, count):
         """
         Overwrite the line and reprint the message to prevent stdout spam.
         """
-        if not self._quiet and ngramcount % 1000 == 0:
-            sys.stdout.write('\r{}-grams collected: {}K '.format(self._ngramsize, ngramcount/1000))
+        if not self._quiet and count == 0:
+            sys.stdout.write('\rToks generated: {} '.format(count))
             sys.stdout.flush()
 
-    def _endCountPrinting(self, ngramcount):
+    def _endCountPrinting(self, count):
         """
         Write out newline to move past the progress printer and log the total
         number of ngrams collected.
@@ -94,11 +96,10 @@ class TextParser:
         if not self._quiet:
             sys.stdout.write('\n')
             sys.stdout.flush()
-        logging.info("Collected {} {}-grams.".format(ngramcount, self._ngramsize))
+        logging.info("Generated {} tokens.".format(count))
 
     def write(self, outputfile):
-        tokMap = TokenMap(self._store.read())
-        pickle.dump(tokMap, outputfile)
+        outputfile.write(" ".join(self._store.read()))
 
     def _printProgress(self, progress):
         """
@@ -123,16 +124,17 @@ def main(argv):
     parser = argparse.ArgumentParser(prog='{}'.format(PROGRAM_NAME), description='Parse text corpra into n-gram model.')
     parser.add_argument('-v', '--version', action='version', version='{} {}'.format(PROGRAM_NAME, PROGRAM_VERSION))
     parser.add_argument('-i', '--infile', action='store', type=str, required=True, help='the input file, set to \'-\' for stdin.')
-    parser.add_argument('-o', '--outfile', action='store', type=argparse.FileType('wb'), required=True, help='the output destination')
+    parser.add_argument('-o', '--outfile', action='store', type=argparse.FileType('w'), required=True, help='the output destination')
     parser.add_argument('-n', '--ngramsize', action='store', type=int, help='the ngram size to parse', default=2)
+    parser.add_argument('-t', '--length', action='store', type=int, help='the number of tokens to generate', default=200)
     parser.add_argument('-l', '--loglevel', action='store', type=str, help='log level to use', default='WARNING', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'])
 
     args = parser.parse_args()
 
     logging.basicConfig(level=args.loglevel)
 
-    parser = TextParser(args.infile, args.ngramsize)
-    parser.write(args.outfile)
+    generator = TokenGenerator(args.infile, args.ngramsize, args.length)
+    generator.write(args.outfile)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
